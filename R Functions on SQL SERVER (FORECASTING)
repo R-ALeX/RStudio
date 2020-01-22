@@ -1,0 +1,234 @@
+DECLARE @rscript NVARCHAR(MAX), @p1 INT = 0, @p2 INT = 0, @p3 INT = 0, @p4 INT = 0, @sum INT = 0 /*@Table_Name NVARCHAR(MAX), @Column_Name NVARCHAR(MAX)*/
+DECLARE @sqlscript NVARCHAR(MAX);
+SET @sqlscript =  N'SELECT [Year], [Month], [Value] FROM [Storage_Layer].[dbo].[TEST]'
+SET @rscript =  N'
+deploy <- data.frame(SQLIn)
+
+	Year <- as.numeric(deploy[,1])
+	Month <- as.numeric(deploy[,2])
+	Corrected <- as.numeric(deploy[,3])
+
+MergeMnthYear <- c()
+
+####
+# Merge Year & Month (Our Year may writtena as "YY" or "YYYY")
+####
+
+if (length(deploy$Year) == 2) {
+	MergeMnthYear <- format(as.Date(paste(paste(paste("20" ,deploy$Year, sep = ""), deploy$Month, sep = "-"), "01", sep = "-")), "%Y-%m")
+} else {
+	MergeMnthYear <- format(as.Date(paste(paste(deploy$Year, deploy$Month, sep = "-"), "01", sep = "-")), "%Y-%m")
+}
+
+####
+#Write it on "deploy"
+####
+
+deploy$YearMonth <- MergeMnthYear
+
+####
+# Determine previous Month
+####
+
+if ((as.numeric(format(Sys.time(),"%m"))+11-Change_Mnth)%%12 == 0 ) {
+	MyMonth <- 12
+} else {
+	MyMonth <- (as.numeric(format(Sys.time(),"%m"))+11-Change_Mnth)%%12
+}
+
+####
+# Determine Year when we start calculate
+####
+
+if (length(deploy$Year) == 2) {
+	MinYear <- as.numeric(min(paste("20" ,deploy$Year, sep = "")))
+} else {
+	MinYear <- as.numeric(min(deploy$Year))
+}
+
+####
+# Determine Date when we start calculate
+####
+
+if ((as.numeric(format(Sys.time(),"%m"))+11-Change_Mnth)%%12 == 0 ) {
+	MyDate <- format(as.Date(paste(paste(MinYear, MyMonth, sep = "-"),"01", sep = "-")), "%Y-%m")
+} else {
+	MyDate <- format(as.Date(paste(paste(MinYear+1, MyMonth, sep = "-"),"01", sep = "-")), "%Y-%m")
+}
+
+####
+# First Array When we will stert 
+# to applied for Seasonalty, 
+# Factority And Trendity
+####
+
+Mass <- deploy[deploy$YearMonth <= MyDate,3]
+
+Averagka <- mean(Mass)
+
+Season1 <- c()
+Season1 <- Mass/Averagka
+
+MyFutureDate <- function(Input_Date) {
+	FutureDate <- 0
+	FutureDate <- paste(as.numeric(format(as.Date(paste(Input_Date, "01", sep = "-")), "%Y")) + 1, format(as.Date(paste(Input_Date, "01", sep = "-")), "%m"), sep = "-")
+	return(FutureDate)
+}
+
+####
+# Determine full Array which 
+# calculated Seasonalty, 
+# Factority And Trendity.
+####
+## WE DIVIDED RANGE BY YEAR AND CREATE ARRAY 
+## ON EACH YEAR AND CALCULATE ADDED PARAMETRS 
+####
+
+NextDate1 <- MyFutureDate(MyDate)
+
+Mass1 <- c()
+Mass1 <- deploy[deploy$YearMonth > MyDate & deploy$YearMonth <= NextDate1,3]
+
+####
+#                           FUNCTION 
+# This maintain function, which calculate Factor, Season, Trend
+# Idea is next : First of all we create all vectors and after that 
+# We calculate and insert new data of next years in this Array
+# All diffrences are in first steps, when we firts time start to
+# calculate parametrs. As Season was calculate on earlier steps 
+# we get it vector and create new and add previous calculations 
+# on start of new vector. The Next step we write all vectors in list,
+# where we get names all of this vectors for the next calls.
+####
+# In the end we get long vecors, which we can past in Final table  
+####
+
+MyMain <- function(Array,SeasonArr, x = 12,TrendArr = c(), BasicArr = c(), FactorArr = c()) {
+	Season2 <- c()
+	p <- 0 
+	for(i in (length(TrendArr)+1):(length(TrendArr)+x)) {
+		if (i == 1 & length(TrendArr) == 0 & length(BasicArr) == 0 & length(FactorArr) == 0 & length(Season2) == 0) {
+			FactorArr[i] <- (Averagka + Trend0) * SeasonArr[i]
+			BasicArr[i] <- Alpha_R * Array[i] / SeasonArr[i] + (1 - Alpha_R) *  (Averagka + Trend0)
+			TrendArr[i] <- Beta_R*(BasicArr[i] - Averagka) + (1 - Beta_R) * Trend0
+		} else {
+			FactorArr[i] <- (BasicArr[i-1] + TrendArr[i-1]) * SeasonArr[i]
+			BasicArr[i] <- Alpha_R * Array[i] / SeasonArr[i] + (1 - Alpha_R) * (BasicArr[i-1]+TrendArr[i-1]) 
+			TrendArr[i] <- Beta_R*(BasicArr[i] - BasicArr[i-1]) + (1 - Beta_R) * TrendArr[i-1]
+		}
+		if (p == 0) {
+			Season2 <- SeasonArr
+		}
+		Season2[i+12] <- Gamma_R * Array[i] / BasicArr[i] + (1 - Gamma_R) * SeasonArr[i]
+		p <- p + 1
+	}
+
+	My_list <- list(Basic = BasicArr, Trend = TrendArr, Factor = FactorArr, Season = Season2)
+	return(My_list)
+}
+
+U <- MyMain(Mass1, Season1)
+
+####
+# THE NEXT ITERATION OF CALLING FUNCTION
+####
+
+NextDate2 <- MyFutureDate(NextDate1)
+
+Vec <- c(rep("", 12))
+
+Vec <- U$Season 
+
+####
+# Append Array of Data
+####
+
+Mass2 <- c()
+Mass2 <- c(Mass1,deploy[deploy$YearMonth > NextDate1 & deploy$YearMonth <= NextDate2,3])
+
+####
+# Call Fucntion the next Time 
+####
+
+U2 <- MyMain(Mass2, U$Season,, U$Trend, U$Basic, U$Factor)
+
+####
+# Write Result in Table
+####
+
+deploy$Season <- U2$Season
+deploy$Basic <- c(rep("", 12), U2$Basic)
+deploy$Trend <- c(rep("", 12), U2$Trend)
+deploy$Factor <- c(rep("", 12), U2$Factor)
+
+####
+#                             FUNCTION
+# Our calcualtion base calculated on previous data we use for calculate 
+# Future data - forecast. We use New Arrays, because we need now length 
+# of previous vectors, If we use New vectors in start lenght will be 
+# increase on each iteration. End the end we write all vectors in list 
+# with names for future calling. 
+####
+
+mnth <- c(1:ForcastMnth) 
+
+My_Forecast <- function(TrendArr, SeasonArr) {
+	Trend2 <- TrendArr
+	Season2 <- SeasonArr
+	New_Forecast <- c()
+	for(i in 1:length(mnth)) {
+		New_Forecast[i] <- (U2$Basic[length(U2$Basic)] + Trend2[length(TrendArr)-1+i] * mnth[i])*Season2[length(SeasonArr)-12+i]
+		Trend2[length(TrendArr)+i] <- TrendArr[length(TrendArr)]*((1-Trend_Dampening)**(mnth[i]/12))
+		Season2[length(SeasonArr)+i] <- Season2[length(SeasonArr)-12+i]
+	}
+
+	My_list <- list(Forcast = New_Forecast, Trend = Trend2, Season = Season2)
+	return(My_list)
+}
+
+U3 <- My_Forecast(U2$Trend, U2$Season)
+
+New_Year <- ForcastMnth/12
+VectYear <- c()
+
+####
+# Create Columns with Forecasting years and months 
+####
+
+for (i in 1:New_Year-1) {
+	VectYear <- c(append(VectYear,sapply(max(Year) +1 + i, function(x) rep(x, 12)),after = length(VectYear)))
+}
+
+ListDate <- list(Year = VectYear, Month = rep(1:12, New_Year))
+
+MergeListDate <- format(as.Date(paste(paste(ListDate$Year, ListDate$Month, sep = "-"), "01", sep = "-")), "%Y-%m")
+
+####
+# Create new Table and write all there
+# I did the it so. Because its just comfortable for me
+####
+
+Table <- data.frame(c(deploy[,1], ListDate$Year))
+Table$Month <- c(deploy[,2], ListDate$Month)
+Table$Value <- c(deploy[,3], U3$Forcast)
+Table$Y_M <- c(deploy[,4], MergeListDate)
+Table$Season <- c(deploy[,5], U3$Season[(length(U3$Season)-ForcastMnth+1):length(U3$Season)])
+Table$Basic <- c(deploy[,6], rep("", ForcastMnth))
+Table$Trend <- c(deploy[,7], U3$Trend[(length(U3$Trend)-ForcastMnth+1):length(U3$Trend)])
+Table$Factor <- c(deploy[,8], rep("", ForcastMnth))
+
+SQLOut <- data.frame(Table)' 
+EXEC sp_execute_external_script
+@language = N'R',
+@script = @rscript,
+@input_data_1 = @sqlscript,
+@input_data_1_name = N'SQLIn',
+@output_data_1_name = N'SQLOut',
+@params = N' @Alpha_R FLOAT, @Beta_R FLOAT, @Gamma_R FLOAT, @Change_Mnth INT, @Trend0 INT, @ForcastMnth INT, @Trend_Dampening FLOAT',
+@Change_Mnth = 0,
+@Alpha_R = 0.05,
+@Beta_R = 0.2,
+@Gamma_R = 0.3, 
+@Trend0 = 0,
+@ForcastMnth = 36,
+@Trend_Dampening = 0.15 
